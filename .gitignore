@@ -16,3 +16,13 @@ src/data_pipeline.py
 src/policy_rag.py
 src/refund_agent.py
 src/triage.py
+*_output.txt
+GITHUB_RESOURCES.md
+run_project.py
+notebooks/
+src/__init__.py
+src/customer_models.py
+src/data_pipeline.py
+src/policy_rag.py
+src/refund_agent.py
+src/triage.py
