@@ -1,7 +1,7 @@
 import os, sqlite3
 import pandas as pd
 
-from instamart_customer_copilot_teaching_kit import src
+
 
 RAW, CLEAN = "data/raw/", "data/clean/"
 os.makedirs(CLEAN, exist_ok=True)
@@ -70,4 +70,4 @@ with sqlite3.connect("data/instamart.db") as con:
     c_out.to_sql("customers", con, if_exists="replace", index=False)
     p.to_sql("products", con, if_exists="replace", index=False)
     o_out.to_sql("orders", con, if_exists="replace", index=False)
-print("clean CSVs and data/instamart.db written") ; python- src/a2_clean.py # pyright: ignore[reportUndefinedVariable]
+print("clean CSVs and data/instamart.db written")

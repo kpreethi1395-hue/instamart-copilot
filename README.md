@@ -41,7 +41,117 @@ Open `notebooks/Customer_Intelligence_Support_Copilot.ipynb` and run cells from 
 5. Run assertions before downstream modelling. A failed assertion should stop the pipeline rather than silently propagate bad data.
 
 ## Part A — Data foundation
-The pipeline standardizes city/gender, treats invalid ages as missing, resolves duplicate orders by keeping the latest timestamp, imputes missing amounts from catalogue price, sets negative delivery times to missing and imputes only completed-order delivery durations by product category. Review every rule before teaching; the capstone handout's numeric checkpoints should be used as acceptance tests.
+
+The raw exports are deliberately dirty. This part audits them, cleans them with explicit rules, stores the clean tables in SQLite (`data/instamart.db`) and answers business questions in SQL and pandas. Scripts: `src/a1_audit.py`, `src/a2_clean.py`, `src/a3_validate.py`, `src/a4_sql.py`, `src/a5_eda.py`; queries in `sql/queries.sql`.
+
+### Audit of the raw data
+Each raw table was loaded with pandas (`tickets.csv` with `keep_default_na=False`). The first three audit figures are the table sizes: customers has 1,200 rows, products 40, orders 13,084 and tickets 164. Data types and missing values per column are printed by `a1_audit.py`.
+
+| Figure | Value |
+|---|---|
+| Raw order rows | 13,084 |
+| Exact duplicate rows | 119 |
+| Rows with status pending | 656 |
+| Distinct order_id | 12,309 |
+| Non-numeric order_amount entries | 120 |
+| Negative delivery_minutes | 106 |
+| Blank delivery_minutes | 2,541 |
+| Customers: blank age | 61 |
+| Customers: age outside 10–100 | 6 |
+| Customers: distinct raw city spellings | 24 |
+| Customers: distinct non-blank raw gender spellings | 10 |
+| Customers: blank gender | 30 |
+
+### Cleaning rules and values changed
+
+**Customers**
+
+| # | Rule | Values changed |
+|---|---|---|
+| C1 | City: strip leading and trailing spaces, then title case | 24 raw spellings reduced to exactly 6 cities |
+| C2 | Gender: map every spelling to male, female or unknown (blank becomes unknown) | 10 raw spellings reduced to 3 values; 30 blank became unknown |
+| C3 | Age: values outside 10–100 set to missing, then all missing ages filled with the median age of the customer's city (`groupby` + `transform`) | 6 set to missing; 67 filled (61 blank + 6) |
+| C4 | `signup_date` converted to a datetime | all 1,200 rows |
+
+**Orders** (applied in this order)
+
+| # | Rule | Values changed |
+|---|---|---|
+| O1 | `order_ts` converted to a datetime | all rows |
+| O2 | Exact duplicate rows removed | 119 rows removed |
+| O3 | For each `order_id`, keep only the record with the latest `order_ts` (drops the earlier pending record) | 656 rows removed |
+| O4 | `order_amount` converted to numeric (unparseable becomes missing), then missing amounts filled with `round(price_inr × quantity × (1 − discount_pct / 100), 2)` | 112 amounts filled |
+| O5 | Negative `delivery_minutes` set to missing; for completed orders every missing value is filled with the median delivery time of the order's product category (`groupby` + `transform`); cancelled orders are left missing | 105 set to missing; 774 completed orders filled; 1,199 cancelled orders left missing |
+
+Cancelled orders keep a missing delivery time on purpose: they were never delivered, so imputing a time would invent data.
+
+**Result after cleaning**
+- Cities: Pune 227, Delhi 210, Bengaluru 197, Chennai 191, Hyderabad 191, Mumbai 184.
+- Genders: female 610, male 560, unknown 30. No missing ages, and every age is between 18 and 60.
+- Orders: 12,309 rows, one per `order_id` (11,110 completed and 1,199 cancelled), no pending rows, no missing `order_amount`.
+- No missing `delivery_minutes` among completed orders; 1,199 missing among cancelled orders.
+- Sum of `order_amount` over completed orders: INR 2,998,668.80.
+
+### Storage and validation
+The clean tables are written to `data/clean/customers.csv`, `products.csv` and `orders.csv` and to the SQLite database `data/instamart.db` as tables `customers`, `products` and `orders` (`order_ts` stored as text in the form YYYY-MM-DD HH:MM:SS). `src/a3_validate.py` asserts 14 checkpoints (table names, row counts, status counts, no pending rows, no missing amounts, delivery-time rules, completed revenue, city counts, gender counts and the age range) and prints exactly:
+
+```
+ALL CHECKPOINTS PASSED
+```
+
+### SQL analysis
+Each query was saved in `sql/queries.sql` and run with `pd.read_sql_query` against `data/instamart.db`. Only completed orders count as revenue or spend.
+
+| Query | Technique | Result |
+|---|---|---|
+| Q1 | WHERE then HAVING | 30 customers with a total above INR 8,000 over completed orders above INR 500 |
+| Q2 | Three-table join | 30 rows (city × category); the revenues add up to INR 2,998,668.80; the largest cell is Bengaluru / Electronics at INR 233,909.45 |
+| Q3 | Scalar subquery | 11 products priced above the average catalogue price |
+| Q4 | LEFT JOIN | 25 customers with no completed order |
+| Q5 | Common table expressions | 550 customers above the average total spend of INR 2,552.06 |
+| Q6 | RANK, DENSE_RANK, ROW_NUMBER over city | see the table below; 8 rows have RANK different from ROW_NUMBER |
+| Q7 | Running total | 183 daily rows; the last cumulative value is INR 2,998,668.80 |
+
+Top customer per city (Q6):
+
+| City | Customer | Total spend (INR) |
+|---|---|---|
+| Bengaluru | C0082 | 12,856.20 |
+| Chennai | C0930 | 10,151.40 |
+| Delhi | C0291 | 13,742.60 |
+| Hyderabad | C0743 | 12,730.05 |
+| Mumbai | C0693 | 14,766.55 |
+| Pune | C0426 | 10,377.10 |
+
+RANK() and ROW_NUMBER() differ in 8 rows because customers with exactly equal spend share the same RANK, while ROW_NUMBER() always gives every row a unique number, so after a tie the two sequences drift apart.
+
+### pandas cross-check
+Q2 was rebuilt with `pd.pivot_table(..., margins=True)`. Its grand total is INR 2,998,668.80, equal to the SQL total.
+
+Per-city sum, mean and count of completed `order_amount` (`groupby` with named aggregation):
+
+| City | Sum (INR) | Mean (INR) | Count |
+|---|---|---|---|
+| Bengaluru | 523,643.40 | 276.47 | 1,894 |
+| Mumbai | 479,058.50 | 297.00 | 1,613 |
+| Chennai |  463629.15 | 272.72 | 1700 |
+| Delhi | 502829.80 | 243.62 | 2064 |
+| Hyderabad | 528589.90 | 284.95 | 1855 |
+| Pune | 500918.05 | 252.48 | 1984 |
+
+### Exploratory analysis of completed order_amount
+| Statistic | Value |
+|---|---|
+| Mean | 269.91 |
+| Median | 135.00 |
+| Skewness | about 4.61 |
+| Q1 / Q3 | 64.80 / 297.00 |
+| 1.5 × IQR fences | lower below zero (no outliers), upper 645.30 |
+| Outliers beyond the fences | 897 above the upper fence, none below the lower fence |
+
+Correlation matrix of `order_amount`, `discount_pct`, `quantity` and `delivery_minutes` over completed orders: the pair with the largest absolute correlation is `order_amount` with `discount_pct` at about −0.095; `order_amount` with `quantity` is +0.087.
+
+**What is this data about?** It describes completed quick-commerce orders from six Indian cities across five product categories, with an amount, discount, quantity and delivery time for each order. **What do the distributions and statistics look like?** Order values are strongly right-skewed: the mean (269.91) is almost twice the median (135.00) and the skewness is about 4.61, so most orders are small and a few are large. **Are there outliers or anomalies?** 897 orders lie above the upper fence of 645.30 and none below. They are mostly expensive Electronics orders, so they are genuine large orders and not data errors. **What relationships exist between variables?** The largest absolute correlation is order_amount with discount_pct at about −0.095, just ahead of order_amount with quantity at +0.087. Both are very weak, and a correlation of this size does not establish causation.
 
 ## Part B — Segments and lapse
 ### Lapse problem
