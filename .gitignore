@@ -5,4 +5,4 @@ __pycache__/
 .env
 data/instamart.db
 state/*.json
-audit_output.txt
+audit_output.txt*_output.txt
